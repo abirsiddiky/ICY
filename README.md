@@ -35,7 +35,6 @@ A beautiful, modern terminal-based snapshot manager for Linux, written in Rust. 
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
 ```
 
 ### Step 2: Install System Dependencies
