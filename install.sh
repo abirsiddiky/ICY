@@ -12,14 +12,35 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Check if Rust is installed
+# Check if Rust is installed - handle sudo PATH issue
+# When running with sudo, root's PATH may not include ~/.cargo/bin
+# even if the original user has Rust installed there.
 if ! command -v cargo &> /dev/null; then
-    echo "Error: Rust is not installed."
-    echo "Please install Rust from https://rustup.rs/"
+    # Try to find cargo in the invoking user's home directory
+    REAL_USER="${SUDO_USER:-$USER}"
+    REAL_HOME=$(eval echo "~$REAL_USER")
+
+    if [ -f "$REAL_HOME/.cargo/env" ]; then
+        echo "Found Rust in $REAL_HOME/.cargo — sourcing it..."
+        source "$REAL_HOME/.cargo/env"
+        export PATH="$REAL_HOME/.cargo/bin:$PATH"
+    fi
+fi
+
+# Check again after attempting to source cargo env
+if ! command -v cargo &> /dev/null; then
+    echo "Error: Rust is not installed (or not found in PATH)."
+    echo ""
+    echo "If you already installed Rust via rustup, this is likely a"
+    echo "sudo PATH issue. Try one of these instead:"
+    echo ""
+    echo "  sudo env \"PATH=\$PATH\" ./install.sh"
+    echo ""
+    echo "Or install Rust from https://rustup.rs/"
     exit 1
 fi
 
-echo "✓ Rust toolchain found"
+echo "✓ Rust toolchain found: $(cargo --version)"
 
 # Check for required system tools
 echo ""
