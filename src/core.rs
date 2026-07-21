@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -167,6 +167,7 @@ impl SnapshotManager {
         match self.fs_type {
             FilesystemType::Btrfs => self.diff_btrfs_snapshots(&from_snap.path, &to_snap.path),
             FilesystemType::Lvm => {
+                // LVM doesn't have native diff, so we'd need to mount and compare
                 Ok(vec!["LVM diff not yet implemented".to_string()])
             }
             FilesystemType::Auto => {
@@ -182,6 +183,7 @@ impl SnapshotManager {
         let mut to_keep = Vec::new();
         let mut categorized: HashMap<String, Vec<&Snapshot>> = HashMap::new();
 
+        // Categorize snapshots
         for snap in &snapshots {
             let category = if snap.timestamp > Utc::now() - chrono::Duration::hours(1) {
                 "hourly"
@@ -199,15 +201,19 @@ impl SnapshotManager {
                 .push(snap);
         }
 
+        // Apply retention policy
         if let Some(hourly) = categorized.get("hourly") {
             to_keep.extend(hourly.iter().take(self.config.retention.hourly).copied());
         }
+
         if let Some(daily) = categorized.get("daily") {
             to_keep.extend(daily.iter().take(self.config.retention.daily).copied());
         }
+
         if let Some(weekly) = categorized.get("weekly") {
             to_keep.extend(weekly.iter().take(self.config.retention.weekly).copied());
         }
+
         if let Some(monthly) = categorized.get("monthly") {
             to_keep.extend(monthly.iter().take(self.config.retention.monthly).copied());
         }
@@ -227,6 +233,7 @@ impl SnapshotManager {
         Ok(removed_count)
     }
 
+    // Btrfs operations
     fn create_btrfs_snapshot(&self, dest: &Path) -> Result<()> {
         run_command(
             "btrfs",
@@ -245,20 +252,31 @@ impl SnapshotManager {
     }
 
     fn rollback_btrfs_snapshot(&self, snapshot_path: &str) -> Result<()> {
+        // Create a backup of current state
         let backup_path = format!("{}.backup", self.config.path);
         run_command(
             "btrfs",
-            &["subvolume", "snapshot", &self.config.path, &backup_path],
+            &[
+                "subvolume",
+                "snapshot",
+                &self.config.path,
+                &backup_path,
+            ],
         )?;
+
+        // Delete current subvolume
         run_command("btrfs", &["subvolume", "delete", &self.config.path])?;
+
+        // Create new subvolume from snapshot
         run_command(
             "btrfs",
             &["subvolume", "snapshot", snapshot_path, &self.config.path],
         )?;
+
         Ok(())
     }
 
-    fn diff_btrfs_snapshots(&self, from: &str, _to: &str) -> Result<Vec<String>> {
+    fn diff_btrfs_snapshots(&self, from: &str, to: &str) -> Result<Vec<String>> {
         let output = Command::new("btrfs")
             .args(&["subvolume", "find-new", from, "9999999"])
             .output()
@@ -271,16 +289,27 @@ impl SnapshotManager {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let files: Vec<String> = stdout
             .lines()
-            .filter_map(|line| line.split_whitespace().last().map(|s| s.to_string()))
+            .filter_map(|line| {
+                // Parse btrfs output
+                line.split_whitespace().last().map(|s| s.to_string())
+            })
             .collect();
 
         Ok(files)
     }
 
+    // LVM operations
     fn create_lvm_snapshot(&self, name: &str) -> Result<()> {
         run_command(
             "lvcreate",
-            &["--snapshot", "--name", name, "--size", "5G", &self.config.path],
+            &[
+                "--snapshot",
+                "--name",
+                name,
+                "--size",
+                "5G",
+                &self.config.path,
+            ],
         )
     }
 
@@ -292,6 +321,7 @@ impl SnapshotManager {
         run_command("lvconvert", &["--merge", snapshot_path])
     }
 
+    // Metadata operations
     fn load_metadata(&self) -> Result<Vec<Snapshot>> {
         if !self.metadata_file.exists() {
             return Ok(Vec::new());
