@@ -12,35 +12,28 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Check if Rust is installed - handle sudo PATH issue
-# When running with sudo, root's PATH may not include ~/.cargo/bin
-# even if the original user has Rust installed there.
-if ! command -v cargo &> /dev/null; then
-    # Try to find cargo in the invoking user's home directory
-    REAL_USER="${SUDO_USER:-$USER}"
-    REAL_HOME=$(eval echo "~$REAL_USER")
+# Figure out the "real" (non-root) user who invoked sudo.
+# This matters because Rust/cargo is almost always installed per-user
+# via rustup, not system-wide, and rustup's toolchain resolution
+# breaks under root's environment (RUSTUP_HOME/CARGO_HOME missing).
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
-    if [ -f "$REAL_HOME/.cargo/env" ]; then
-        echo "Found Rust in $REAL_HOME/.cargo — sourcing it..."
-        source "$REAL_HOME/.cargo/env"
-        export PATH="$REAL_HOME/.cargo/bin:$PATH"
-    fi
-fi
-
-# Check again after attempting to source cargo env
-if ! command -v cargo &> /dev/null; then
-    echo "Error: Rust is not installed (or not found in PATH)."
-    echo ""
-    echo "If you already installed Rust via rustup, this is likely a"
-    echo "sudo PATH issue. Try one of these instead:"
-    echo ""
-    echo "  sudo env \"PATH=\$PATH\" ./install.sh"
-    echo ""
-    echo "Or install Rust from https://rustup.rs/"
+if [ -z "$REAL_HOME" ] || [ "$REAL_USER" == "root" ]; then
+    echo "Error: Could not determine the invoking non-root user."
+    echo "Please run this script with: sudo ./install.sh"
+    echo "(not as the root user directly)"
     exit 1
 fi
 
-echo "✓ Rust toolchain found: $(cargo --version)"
+# Check if Rust is installed for that user
+if [ ! -f "$REAL_HOME/.cargo/bin/cargo" ]; then
+    echo "Error: Rust is not installed for user '$REAL_USER'."
+    echo "Please install Rust from https://rustup.rs/ (run it as your normal user, not root)"
+    exit 1
+fi
+
+echo "✓ Rust toolchain found for user '$REAL_USER'"
 
 # Check for required system tools
 echo ""
@@ -65,10 +58,13 @@ if [[ $MISSING_DEPS -eq 1 ]]; then
     fi
 fi
 
-# Build the project
+# Build the project AS THE REAL USER, not root.
+# This avoids rustup toolchain-resolution issues entirely, since
+# cargo/rustup work correctly under the user's own environment.
 echo ""
-echo "Building ICY (release mode)..."
-cargo build --release
+echo "Building ICY (release mode) as user '$REAL_USER'..."
+
+sudo -u "$REAL_USER" bash -c "source '$REAL_HOME/.cargo/env' && cd '$(pwd)' && cargo build --release"
 
 if [ $? -ne 0 ]; then
     echo "❌ Build failed"
@@ -77,7 +73,7 @@ fi
 
 echo "✓ Build successful"
 
-# Install binary
+# Install binary (this part needs root)
 echo ""
 echo "Installing binary to /usr/local/bin/icy..."
 cp target/release/icy /usr/local/bin/icy
